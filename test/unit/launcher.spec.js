@@ -25,7 +25,7 @@ class FakeBrowser {
     FakeBrowser._instances.push(this)
     sinon.stub(this, 'start', () => {
       this.state = this.STATE_BEING_CAPTURED
-      return this.state
+      this._done()
     })
     stubPromise(this, 'forceKill')
     sinon.stub(this, 'restart')
@@ -40,13 +40,14 @@ class ScriptBrowser {
     ScriptBrowser._instances.push(this)
     sinon.stub(this, 'start', () => {
       this.state = this.STATE_BEING_CAPTURED
+      this._done()
     })
     stubPromise(this, 'forceKill')
     sinon.stub(this, 'restart')
   }
 }
 
-describe('launcher', () => {
+describe.only('launcher', () => {
   // mock out id generator
   var lastGeneratedId = null
   launcher.Launcher.generateId = () => {
@@ -70,69 +71,92 @@ describe('launcher', () => {
   describe('Launcher', () => {
     var emitter
     var l = emitter = null
+    var config
 
     beforeEach(() => {
       emitter = new events.EventEmitter()
+      config = {
+        captureTimeout: 0,
+        protocol: 'http:',
+        hostname: 'localhost',
+        port: 1234,
+        urlRoot: '/root/'
+      }
       var injector = new di.Injector([{
         'launcher:Fake': ['type', FakeBrowser],
         'launcher:Script': ['type', ScriptBrowser],
         'emitter': ['value', emitter],
-        'config': ['value', {captureTimeout: 0}],
+        'config': ['value', config],
         'timer': ['factory', createMockTimer]
       }])
       l = new launcher.Launcher(emitter, injector)
     })
 
     describe('launch', () => {
-      it('should inject and start all browsers', () => {
-        l.launch(['Fake'], 'http:', 'localhost', 1234, '/root/', 1)
+      it('should inject and start all browsers', (done) => {
+        l.launch(['Fake'], 1)
 
         var browser = FakeBrowser._instances.pop()
-        expect(browser.start).to.have.been.calledWith('http://localhost:1234/root/')
-        expect(browser.id).to.equal(lastGeneratedId)
-        expect(browser.name).to.equal('Fake')
+        l.jobs.on('end', () => {
+          expect(browser.start).to.have.been.calledWith('http://localhost:1234/root/')
+          expect(browser.id).to.equal(lastGeneratedId)
+          expect(browser.name).to.equal('Fake')
+          done()
+        })
       })
 
-      it('should allow launching a script', () => {
-        l.launch(['/usr/local/bin/special-browser'], 'http:', 'localhost', 1234, '/', 1)
+      it('should allow launching a script', (done) => {
+        l.launch(['/usr/local/bin/special-browser'], 1)
 
         var script = ScriptBrowser._instances.pop()
-        expect(script.start).to.have.been.calledWith('http://localhost:1234/')
-        expect(script.name).to.equal('/usr/local/bin/special-browser')
+
+        l.jobs.on('end', () => {
+          expect(script.start).to.have.been.calledWith('http://localhost:1234/')
+          expect(script.name).to.equal('/usr/local/bin/special-browser')
+
+          done()
+        })
       })
 
-      it('should use the non default host', () => {
-        l.launch(['Fake'], 'http:', 'whatever', 1234, '/root/', 1)
+      it('should use the non default host', (done) => {
+        config.hostname = 'whatever'
+        l.launch(['Fake'], 1)
 
         var browser = FakeBrowser._instances.pop()
-        expect(browser.start).to.have.been.calledWith('http://whatever:1234/root/')
+        l.jobs.on('end', () => {
+          expect(browser.start).to.have.been.calledWith('http://whatever:1234/root/')
+          done()
+        })
       })
 
-      it('should only launch the specified number of browsers at once', () => {
+      it('should only launch the specified number of browsers at once', (done) => {
         l.launch([
           'Fake',
           'Fake',
           'Fake'
-        ], 'http:', 'whatever', 1234, '/root/', 2)
+        ], 2)
 
         var b1 = FakeBrowser._instances.pop()
         var b2 = FakeBrowser._instances.pop()
         var b3 = FakeBrowser._instances.pop()
 
-        expect(b1.start).to.not.have.been.called
-        expect(b2.start).to.have.been.calledOnce
-        expect(b3.start).to.have.been.calledOnce
+        setTimeout(() => {
+          expect(b1.start).to.not.have.been.called
+          expect(b2.start).to.have.been.calledOnce
+          expect(b3.start).to.have.been.calledOnce
 
-        b1._done()
-        b2._done()
+          b1._done()
+          b2._done()
 
-        expect(b1.start).to.have.been.calledOnce
+          expect(b1.start).to.have.been.calledOnce
+          l.jobs.on('done', done)
+        }, 1)
       })
     })
 
     describe('restart', () => {
       it('should restart the browser', () => {
-        l.launch(['Fake'], 'http:', 'localhost', 1234, '/root/', 1)
+        l.launch(['Fake'], 1)
         var browser = FakeBrowser._instances.pop()
 
         var returnedValue = l.restart(lastGeneratedId)
@@ -141,14 +165,14 @@ describe('launcher', () => {
       })
 
       it('should return false if the browser was not launched by launcher (manual)', () => {
-        l.launch([], 'http:', 'localhost', 1234, '/', 1)
+        l.launch([], 1)
         expect(l.restart('manual-id')).to.equal(false)
       })
     })
 
     describe('kill', () => {
       it('should kill browser with given id', (done) => {
-        l.launch(['Fake'], 'http:', 'localhost', 1234, '/', 1)
+        l.launch(['Fake'], 1)
         var browser = FakeBrowser._instances.pop()
 
         l.kill(browser.id, done)
@@ -158,7 +182,7 @@ describe('launcher', () => {
       })
 
       it('should return false if browser does not exist, but still resolve the callback', (done) => {
-        l.launch(['Fake'], 'http:', 'localhost', 1234, '/', 1)
+        l.launch(['Fake'], 1)
         var browser = FakeBrowser._instances.pop()
 
         var returnedValue = l.kill('weird-id', done)
@@ -167,7 +191,7 @@ describe('launcher', () => {
       })
 
       it('should not require a callback', (done) => {
-        l.launch(['Fake'], 'http:', 'localhost', 1234, '/', 1)
+        l.launch(['Fake'], 1)
         FakeBrowser._instances.pop()
 
         l.kill('weird-id')
@@ -177,7 +201,7 @@ describe('launcher', () => {
 
     describe('killAll', () => {
       it('should kill all running processe', () => {
-        l.launch(['Fake', 'Fake'], 'http:', 'localhost', 1234, '/', 1)
+        l.launch(['Fake', 'Fake'], 1)
         l.killAll()
 
         var browser = FakeBrowser._instances.pop()
@@ -190,7 +214,7 @@ describe('launcher', () => {
       it('should call callback when all processes killed', () => {
         var exitSpy = sinon.spy()
 
-        l.launch(['Fake', 'Fake'], 'http:', 'localhost', 1234, '/', 1)
+        l.launch(['Fake', 'Fake'], 1)
         l.killAll(exitSpy)
 
         expect(exitSpy).not.to.have.been.called
@@ -220,22 +244,26 @@ describe('launcher', () => {
     })
 
     describe('areAllCaptured', () => {
-      it('should return true if only if all browsers captured', () => {
-        l.launch(['Fake', 'Fake'], 'http:', 'localhost', 1234, '/', 2)
+      it('should return true if only if all browsers captured', (done) => {
+        l.launch(['Fake', 'Fake'], 2)
 
-        expect(l.areAllCaptured()).to.equal(false)
+        l.jobs.on('end', () => {
+          expect(l.areAllCaptured()).to.equal(false)
 
-        l.markCaptured(1)
-        expect(l.areAllCaptured()).to.equal(false)
+          l.markCaptured(1)
+          expect(l.areAllCaptured()).to.equal(false)
 
-        l.markCaptured(2)
-        expect(l.areAllCaptured()).to.equal(true)
+          l.markCaptured(2)
+          expect(l.areAllCaptured()).to.equal(true)
+
+          done()
+        })
       })
     })
 
     describe('onExit', () => {
       it('should kill all browsers', (done) => {
-        l.launch(['Fake', 'Fake'], 'http:', 'localhost', 1234, '/', 1)
+        l.launch(['Fake', 'Fake'], 1)
 
         emitter.emitAsync('exit').then(done)
 
